@@ -14,6 +14,7 @@ function v(&$arr, $key, $def) {
     return isset($arr[$key]) ? $arr[$key] : $def;
 }
 
+// CONSTANT URLs
 $bb_server = 'my.rochester.edu';
 $bb_url = "https://$bb_server";
 $login_path = '/webapps/login/index';
@@ -23,15 +24,14 @@ $sequoia_token_path = '/webapps/bb-ecard-sso-bb_bb60/token.jsp';
 $sequoia_auth_url = 'https://ecard.sequoiars.com/eCardServices/AuthenticationHandler.ashx';
 $sequoia_balance_url = 'https://ecard.sequoiars.com/eCardServices/eCardServices.svc/WebHttp/GetAccountHolderInformationForCurrentUser';
 $sequoia_history_url = 'https://ecard.sequoiars.com/eCardServices/eCardServices.svc/WebHttp/GetTransactionHistoryForCurrentUserSearch';
-$cookies = array('cookies_enabled' => 'yes');
 
-$sequoia_token = '';
-
+// types for curl_request() function
 define('POST_APPLICATION', 0);
 define('POST_MULTIPART', 1);
 define('POST_JSON', 2);
 
-function bb_request($path, $post = array(), $flags = POST_APPLICATION) {
+
+function curl_request($path, $post = array(), $flags = POST_APPLICATION) {
     global $bb_url;
     global $cookies;
     if ($path[0] == '/') {
@@ -89,34 +89,34 @@ function bb_request($path, $post = array(), $flags = POST_APPLICATION) {
     return $data;
 }
 
-function bb_login() {
+function bb_login($netid, $pass) {
     global $login_path;
-    global $netid;
-    global $pass;
 
     $enc_pass = base64_encode($pass);
-    $data = bb_request($login_path, array('user_id'=>$netid, 'encoded_pw'=>$enc_pass, 'encoded_pw_unicode' => '.'));
+    $data = curl_request($login_path, array('user_id'=>$netid, 'encoded_pw'=>$enc_pass, 'encoded_pw_unicode' => '.'));
     return strpos($data, 'Location: http://my.rochester.edu/webapps/portal/frameset.jsp') !== false;
 }
 
-function seq_login() {
+function seq_token() {
     global $sequoia_token_path;
-    global $sequoia_auth_url;
-    global $sequoia_token;
 
-    $data = bb_request($sequoia_token_path);
+    $data = curl_request($sequoia_token_path);
     $matches = array();
     if (preg_match('/name="AUTHENTICATIONTOKEN" value="([^"]+)/', $data, &$matches)) {
-        $sequoia_token = $matches[1];
+        return $matches[1];
+    } else {
+        return false;
+    }
+}
 
-        $post = array('AUTHENTICATIONTOKEN' => $sequoia_token);//, 'DESTINATIONURL' => 'https://ecard.sequoiars.com/rochester/eCardCardholder/StudentOverviewPage.aspx');
-        $data = bb_request($sequoia_auth_url, $post, POST_MULTIPART);
+function seq_login($sequoia_token) {
+    global $sequoia_auth_url;
 
-        if (strpos(substr($data, strpos($data, "\r\n\r\n")), 'No destination url posted.')) {
-            return true;
-        } else {
-            return false;
-        }
+    $post = array('AUTHENTICATIONTOKEN' => $sequoia_token);//, 'DESTINATIONURL' => 'https://ecard.sequoiars.com/rochester/eCardCardholder/StudentOverviewPage.aspx');
+    $data = curl_request($sequoia_auth_url, $post, POST_MULTIPART);
+
+    if (strpos(substr($data, strpos($data, "\r\n\r\n")), 'No destination url posted.')) {
+        return true;
     } else {
         return false;
     }
@@ -125,17 +125,35 @@ function seq_login() {
 function seq_get_balance() {
     global $sequoia_balance_url;
 
-    $data = bb_request($sequoia_balance_url, array(), POST_JSON);
-    $json = json_decode(substr($data, strpos($data, "\r\n\r\n")), true);
+    $data = curl_request($sequoia_balance_url, array(), POST_JSON);
+    $json = substr($data, strpos($data, "\r\n\r\n"));
     return $json;
 }
 
 function seq_get_hist() {
     global $sequoia_history_url;
 
-    $data = bb_request($sequoia_history_url, array('startDateString'=>'','endDateString'=>'','fundCode'=>0), POST_JSON);
-    $json = json_decode(substr($data, strpos($data, "\r\n\r\n")), true);
+    $data = curl_request($sequoia_history_url, array('startDateString'=>'','endDateString'=>'','fundCode'=>0), POST_JSON);
+    $json = substr($data, strpos($data, "\r\n\r\n"));
     return $json;
+}
+
+function session_end() {
+    // Unset all of the session variables.
+    $_SESSION = array();
+
+    // If it's desired to kill the session, also delete the session cookie.
+    // Note: This will destroy the session, and not just the session data!
+    if (ini_get("session.use_cookies")) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000,
+            $params["path"], $params["domain"],
+            $params["secure"], $params["httponly"]
+        );
+    }
+
+    // Finally, destroy the session.
+    session_destroy();
 }
 
 function mon($amount, $p = '+') {
@@ -158,19 +176,162 @@ $pass = v(&$_POST, 'pass', '');
 $get_hist = v(&$_GET, 'get_hist', false);
 $get_hist = v(&$_POST, 'get_hist', $get_hist);
 
-if ($netid != '' && $pass != '') {
+$step = v(&$_GET, 'step', 0);
+
+function parse_result(&$output, &$bal, &$hist) {
+    $output['name'] = $bal['d']['FullName'];
+    $output['accounts'] = array();
+    $item_list = $bal['d']['_ItemList'];
+    if (count($item_list) > 0) {
+        foreach ($item_list as $item) {
+            $output['accounts'][] = array(
+                'name' => trim($item['Name']),
+                'amount' => mon($item['Balance'], ''));
+        }
+    }
+
+    if (count($hist) > 0) {
+        $output['history'] = array();
+        $item_list = $hist['d']['_ItemList'];
+        if (count($item_list) > 0) {
+            foreach ($item_list as $item) {
+                $output['history'][] = array(
+                    'time' => $item['TransactionDateTimeStr'],
+                    'location' => $item['Location'],
+                    'account' => trim($item['FundName']),
+                    'amount' => mon($item['Amount']),
+                    'type' => $item['Type']
+                );
+            }
+        }
+    }
+}
+
+if ($step > 0) {
+    session_start();
+    if (isset($_SESSION['cookiejar'])) {
+        $cookies = array();
+        $cookie_set = explode('; ', $_SESSION['cookiejar']);
+        foreach ($cookie_set as $cookie) {
+            if (strpos($cookie, '=') > 0) {
+                $kv = explode('=', $cookie,2);
+            } else {
+                $kv = array(0 => $cookie, 1 => '');
+            }
+            $cookies[$kv[0]] = $kv[1];
+        }
+    } else {
+        // COOKIES THIS SESSION
+        $cookies = array('cookies_enabled' => 'yes');
+    }
+    $result = array();
+    $error = 'Success.';
+    if (!isset($_SESSION['netid'])) {
+        $_SESSION['netid'] = $netid;
+    } elseif ($_SESSION['netid'] != $netid) {
+        session_end();
+    }
+    switch ($step) {
+    case 1: // STEP 1: bb_login
+        if ($netid == '' || $pass == '') {
+            $succeed = false;
+            $error = 'Net ID or Password not provided.';
+            session_end();
+        } else {
+            $succeed = bb_login($netid, $pass);
+            if ($succeed) {
+                $text = 'Getting a Sequoia token...';
+            } else {
+                $error = 'Net ID or Password incorrect or other Blackboard error.';
+                session_end();
+            }
+        }
+        break;
+    case 2: // STEP 2: seq_token
+        $succeed = seq_token();
+        if ($succeed) {
+            $_SESSION['sequoia_token'] = $succeed;
+            $succeed = true;
+            $text = 'Authenticating with Sequoia...';
+        } else {
+            $error = 'Unable to get Sequoia token.';
+            session_end();
+        }
+        break;
+    case 3: // STEP 3: seq_login
+        $succeed = seq_login($_SESSION['sequoia_token']);
+        if ($succeed) {
+            $text = 'Requesting your balance...';
+        } else {
+            $error = 'Unable to log in to Sequoia.';
+            session_end();
+        }
+        break;
+    case 4: // STEP 4: seq_get_balance
+        $succeed = seq_get_balance();
+        if (strlen($succeed) > 0) {
+            $_SESSION['balance_json'] = $succeed;
+            $bal_data = $succeed;
+            $succeed = true;
+            $text = 'Requesting your transaction history...';
+        } else {
+            $succeed = false;
+            $error = 'Unable to get balance.';
+            session_end();
+        }
+        break;
+    case 5: // STEP 5: seq_get_histroy
+        $succeed = seq_get_hist();
+        if (strlen($succeed) > 0) {
+            $bal_data = $_SESSION['balance_json'];
+            $hist_data = $succeed;
+            $succeed = true;
+            $text = 'Generating output...';
+        } else {
+            $succeed = false;
+            $error = 'Unable to get transaction history.';
+            session_end();
+        }
+        break;
+    }
+
+    if ($succeed) {
+        $_SESSION['cookiejar'] = urldecode(http_build_query($cookies, '', '; '));
+        $step++;
+        $result['result'] = 100; // 100 Continue
+        $result['step'] = $step; // current progress
+        $result['total'] = $get_hist ? 6 : 5; // 6 part progress bar
+        $result['progtext'] = $text;
+        if ($step == 6 || ($step == 5 && $get_hist == false)) {
+            $result['result'] = 200; // 200 OK
+            $bal = json_decode($bal_data, true);
+            if (isset($hist_data)) {
+                $hist = json_decode($hist_data, true);
+            } else {
+                $hist = array();
+            }
+            parse_result(&$result, &$bal, &$hist);
+        }
+    } else {
+        $result['result'] = 400; // 400 Error
+        $result['error'] = $error;
+    }
+    echo json_encode($result);
+
+} elseif ($netid != '' && $pass != '') {
+    // SLOW METHOD... (if step= is not set)
     //header('Content-Type: application/json');
     $result = array();
-    if (bb_login()) {
+    if (bb_login($netid, $pass)) {
         //echo 'Blackboard success.';echo "\n";
-        if (seq_login()) {
+        if (seq_login(seq_token())) {
             //echo 'Got sequoia auth.';echo " token=$sequoia_token\n";
             $bal_data = seq_get_balance();
             if (!$bal_data) {
-                $result['result'] = 'E';
+                $result['result'] = 400;
                 $result['error'] = 'Sequoia balance request error.';
             } else {
-                $result['result'] = 'B';
+                $result['result'] = 200;
                 $result['name'] = $bal_data['d']['FullName'];
                 $result['accounts'] = array();
                 $item_list = $bal_data['d']['_ItemList'];
@@ -187,7 +348,7 @@ if ($netid != '' && $pass != '') {
                     if (!$hist_data) {
                         $result['error'] = 'Sequoia history request error.';
                     } else {
-                        $result['result'] = 'H';
+                        $result['result'] = 200;
                         $result['history'] = array();
                         $item_list = $hist_data['d']['_ItemList'];
                         if (count($item_list) > 0) {
@@ -205,11 +366,11 @@ if ($netid != '' && $pass != '') {
                 }
             }
         } else {
-            $result['result'] = 'E';
+            $result['result'] = 400;
             $result['error'] = 'Sequoia token get failed.';
         }
     } else {
-        $result['result'] = 'E';
+        $result['result'] = 400;
         $result['error'] = 'Blackboard says incorrect username or password.';
     }
     //print_r($result);
