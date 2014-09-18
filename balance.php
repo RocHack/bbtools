@@ -10,10 +10,6 @@ if (!isset($_SERVER['HTTPS'])) {
     exit;
 }
 
-function v(&$arr, $key, $def) {
-    return isset($arr[$key]) ? $arr[$key] : $def;
-}
-
 // CONSTANT URLs
 $bb_server = 'my.rochester.edu';
 $bb_url = "https://$bb_server";
@@ -29,7 +25,6 @@ $sequoia_history_url = 'https://ecard.sequoiars.com/eCardServices/eCardServices.
 define('POST_APPLICATION', 0);
 define('POST_MULTIPART', 1);
 define('POST_JSON', 2);
-
 
 function curl_request($path, $post = array(), $flags = POST_APPLICATION) {
     global $bb_url;
@@ -89,6 +84,7 @@ function curl_request($path, $post = array(), $flags = POST_APPLICATION) {
     return $data;
 }
 
+
 function bb_login($netid, $pass) {
     global $login_path;
 
@@ -102,7 +98,7 @@ function seq_token() {
 
     $data = curl_request($sequoia_token_path);
     $matches = array();
-    if (preg_match('/name="AUTHENTICATIONTOKEN" value="([^"]+)/', $data, &$matches)) {
+    if (preg_match('/name="AUTHENTICATIONTOKEN" value="([^"]+)/', $data, $matches)) {
         return $matches[1];
     } else {
         return false;
@@ -169,16 +165,15 @@ function mon($amount, $p = '+') {
 }
 
 // get username & password
-$netid = v(&$_POST, 'netid', '');
-$pass = v(&$_POST, 'pass', '');
+$netid = isset($_POST['netid']) ? $_POST['netid'] : '';
+$pass = isset($_POST['pass']) ? $_POST['pass'] : '';
 
 // get vars
-$get_hist = v(&$_GET, 'get_hist', false);
-$get_hist = v(&$_POST, 'get_hist', $get_hist);
+$get_hist = isset($_REQUEST['get_hist']) ? $_REQUEST['get_hist'] : 0;
 
-$step = v(&$_GET, 'step', 0);
+$step = isset($_GET['step']) ? $_GET['step'] : 0;
 
-function parse_result(&$output, &$bal, &$hist) {
+function parse_result($output, $bal, $hist) {
     $output['name'] = $bal['d']['FullName'];
     $output['accounts'] = array();
     $item_list = $bal['d']['_ItemList'];
@@ -205,6 +200,8 @@ function parse_result(&$output, &$bal, &$hist) {
             }
         }
     }
+
+    return array($output, $bal, $hist);
 }
 
 if ($step > 0) {
@@ -310,7 +307,7 @@ if ($step > 0) {
             } else {
                 $hist = array();
             }
-            parse_result(&$result, &$bal, &$hist);
+            list($result, $bal, $hist) = parse_result($result, $bal, $hist);
         }
     } else {
         $result['result'] = 400; // 400 Error
@@ -422,5 +419,4 @@ if ($step > 0) {
 
 <?php
 }
-?>
 
