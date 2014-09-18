@@ -90,7 +90,7 @@ function bb_login($netid, $pass) {
 
     $enc_pass = base64_encode($pass);
     $data = curl_request($login_path, array('user_id'=>$netid, 'encoded_pw'=>$enc_pass, 'encoded_pw_unicode' => '.'));
-    return strpos($data, 'Location: http://my.rochester.edu/webapps/portal/frameset.jsp') !== false;
+    return strpos($data, 'Location: https://my.rochester.edu/webapps/portal/frameset.jsp') !== false;
 }
 
 function seq_token() {
